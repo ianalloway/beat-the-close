@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Beat the Close</title>
+<meta name="description" content="A live betting-market party game for 2–8 players. Get a private scouting read, bet into a shared line, and find out who actually beat the close.">
+<meta name="theme-color" content="#0b1422">
+<meta property="og:title" content="Beat the Close">
+<meta property="og:description" content="A live betting-market party game for 2–8 players. Bet early for a better price, or wait and read the market.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1422'/%3E%3Cpath d='M5 22 L11 16 L16 19 L22 10 L27 13' fill='none' stroke='%232dd4bf' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='22' cy='10' r='2.6' fill='%23fbbf24'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/barlow-condensed-latin-800-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"><p class="boot">Loading…</p></div>
+
+<dialog id="rules" aria-labelledby="rulesTitle">
+  <form method="dialog" class="rules">
+    <header><h2 id="rulesTitle">How to play</h2><button class="icon" aria-label="Close">✕</button></header>
+    <ol>
+      <li><b>Everyone starts with 1,000 chips.</b> The game is 6 rounds. Each round is a made-up matchup between two river-town teams.</li>
+      <li><b>Every matchup has a hidden true chance</b> that the Home team wins. You get a private <b>Scouting Read</b>: close to the truth, but off by a few points. Everyone's read is different, and nobody else can see yours.</li>
+      <li><b>The line is the market's price.</b> "Home 40%" means a Home bet pays 100 ÷ 40 = 2.5× your stake if Home wins. Away is always 100 minus Home.</li>
+      <li><b>You have 40 seconds.</b> Place up to 3 bets per round, each 1–25% of your chips. Your price locks the moment you bet.</li>
+      <li><b>Every bet moves the line</b> toward the side you bet (up to 3 points). Off-screen sharp money also drifts the line toward the true chance as the clock runs.</li>
+      <li><b>So it's a race:</b> bet early for a better price and tip off the table, or wait, read the market, and take a worse price.</li>
+      <li><b>When time's up</b>, the final line is the <b>Closing Line</b>. Then the game is played: Home wins with the hidden true chance.</li>
+      <li><b>Beat the Close.</b> If your price was better than the closing line, your bet had positive <b>CLV</b> (closing line value). That's how pros know they were right, even when a bet loses.</li>
+      <li><b>Under 10 chips and you're busted.</b> You can still watch.</li>
+      <li><b>After 6 rounds, most chips wins.</b> Ties go to total CLV. The <b>Sharpest</b> award goes to the best total CLV.</li>
+    </ol>
+    <p class="tip">Tip: the ticket shows your edge and a Kelly-sized stake (the bet-sizing formula pros use). Half-Kelly is the safe play.</p>
+    <button class="btn primary wide">Got it</button>
+  </form>
+</dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="vendor/mqtt.min.js"></script>
+<script src="vendor/qrcode.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
