@@ -48,6 +48,15 @@ const pref = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 const payMult = (side, line) => side === 'H' ? 100 / line : 100 / (100 - line);
+// Timers in a background tab get throttled to a crawl; a worker's timers keep running,
+// so the host's clock and the players' heartbeats keep ticking when the tab is hidden.
+function ticker(fn, ms) {
+  try {
+    const w = new Worker(URL.createObjectURL(new Blob([`setInterval(() => postMessage(0), ${ms})`], { type: 'text/javascript' })));
+    w.onmessage = () => fn();
+    return () => w.terminate();
+  } catch { const id = setInterval(fn, ms); return () => clearInterval(id); }
+}
 
 // ---------------------------------------------------------------- crypto
 const EC = { name: 'ECDH', namedCurve: 'P-256' };
@@ -160,7 +169,7 @@ class Host {
     this.lastDrift = Date.now();
     this.net.sub(this.T + '/toHost');
     this.net.on((t, d) => { if (t === this.T + '/toHost') this.onMsg(d); });
-    this.timer = setInterval(() => this.tick(), 200);
+    this.stopTick = ticker(() => this.tick(), 200);
     this.changed();
   }
   addHostSeat() {
@@ -433,7 +442,7 @@ async function joinRoom(room, name, bHint) {
   app.key = await Crypt.derive(app.kp.privateKey, found.hostPub);
   app.onState(found, false);
   app.sendJoin();
-  setInterval(() => { if (app.net?.up) app.net.pub(NS + room + '/toHost', { type: 'ping', cid: app.cid }); }, 5000);
+  ticker(() => { if (app.net?.up) app.net.pub(NS + room + '/toHost', { type: 'ping', cid: app.cid }); }, 5000);
   history.replaceState(null, '', location.pathname + '?room=' + room + (net.b ? '&b=' + net.b : '') + (FAST ? '&fast=1' : '') + (qs.get('broker') ? '&broker=' + encodeURIComponent(qs.get('broker')) : ''));
 }
 
@@ -474,7 +483,7 @@ async function resumeHost(sess) {
 
 function leaveTo(view, err) {
   const wasHost = !!app.host;
-  if (app.host) { clearInterval(app.host.timer); store.del('btc.host.' + app.room); }
+  if (app.host) { app.host.stopTick?.(); store.del('btc.host.' + app.room); }
   store.del('btc.session');
   try { app.net?.end(); } catch {}
   location.href = location.pathname + (err ? '?msg=' + encodeURIComponent(err) : '') + (wasHost || !app.room ? '' : '');
