@@ -286,7 +286,10 @@ class Host {
     const s = this.s, now = Date.now();
     const ack = o => this.net.pub(`${this.T}/p/${cid}/ack`, { ...o, jn }, { retain: true, qos: 1 });
     let seat = Object.values(s.players).find(p => p.name.toLowerCase() === name.toLowerCase());
-    if (this.cids[cid] && this.cids[cid] !== seat?.id) return; // that cid already belongs to another seat
+    // the proof shows this is the key holder, so it is safe to tell them which seat that key already has
+    const owned = Object.values(s.players).find(p => !p.host && p.pub && p.pub.x === pub.x && p.pub.y === pub.y);
+    if (owned && owned !== seat) return ack({ ok: false, err: `You're already at this table as ${owned.name}. Rejoin as ${owned.name}.` });
+    if (this.cids[cid] && this.cids[cid] !== seat?.id) return; // someone else's cid: ignore quietly
     if (seat) {
       if (seat.host) return ack({ ok: false, err: `${name} is the host's name here. Pick another.` });
       // A seat is bound to the key that first took it. Only that key can rejoin; nobody can swap it out.
