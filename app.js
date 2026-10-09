@@ -58,6 +58,80 @@ function ticker(fn, ms) {
   } catch { const id = setInterval(fn, ms); return () => clearInterval(id); }
 }
 
+// ---------------------------------------------------------------- untrusted input
+// The relay is public: anyone who knows a room code can publish to its topics. A remote state is
+// checked against a strict schema and rebuilt from known fields before it is used, and everything
+// interpolated into innerHTML goes through esc().
+const PHASES = ['lobby', 'betting', 'reveal', 'final'];
+const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
+const isStr = (x, max) => typeof x === 'string' && x.length <= max;
+const isInt = (x, lo, hi) => Number.isInteger(x) && x >= lo && x <= hi;
+const isNum = (x, lo, hi) => typeof x === 'number' && Number.isFinite(x) && x >= lo && x <= hi;
+const isId = x => typeof x === 'string' && /^[a-z0-9]{1,16}$/.test(x);
+const isSide = x => x === 'H' || x === 'A';
+const isCid = x => typeof x === 'string' && /^[a-z0-9]{8,24}$/.test(x);
+const BIG = 1e12, MS = 1e14; // chip and epoch-ms ceilings, far above anything a real game reaches
+const need = ok => { if (!ok) throw new TypeError('bad state'); };
+const cleanJwk = k => { need(isObj(k) && k.kty === 'EC' && k.crv === 'P-256' && [k.x, k.y].every(c => typeof c === 'string' && /^[A-Za-z0-9_-]{43}$/.test(c))); return { kty: 'EC', crv: 'P-256', x: k.x, y: k.y }; };
+const cleanList = (a, max, f) => { need(Array.isArray(a) && a.length <= max); return a.map(f); };
+function cleanPlayer(p) {
+  need(isObj(p) && isId(p.id) && isStr(p.name, 16) && isInt(p.chips, 0, BIG) && typeof p.busted === 'boolean' && isNum(p.clv, -BIG, BIG)
+    && typeof p.host === 'boolean' && typeof p.online === 'boolean' && isInt(p.nb, 0, CFG.maxBets));
+  return { id: p.id, name: p.name, chips: p.chips, busted: p.busted, clv: p.clv, host: p.host, online: p.online, nb: p.nb };
+}
+function cleanBet(b) {
+  need(isObj(b) && isId(b.seat) && isSide(b.side) && isInt(b.stake, 1, BIG) && isNum(b.entry, 0, 100) && isNum(b.after, 0, 100) && isNum(b.t, 0, MS));
+  const out = { seat: b.seat, side: b.side, stake: b.stake, entry: b.entry, after: b.after, t: b.t };
+  if (b.clv !== undefined) { need(isNum(b.clv, -100, 100) && typeof b.won === 'boolean' && isNum(b.ret, 0, BIG)); Object.assign(out, { clv: b.clv, won: b.won, ret: b.ret }); }
+  return out;
+}
+function cleanResults(r) {
+  need(isObj(r) && Object.keys(r).length <= CFG.maxSeats);
+  return Object.fromEntries(Object.entries(r).map(([id, x]) => {
+    need(isId(id) && isObj(x) && isInt(x.staked, 0, BIG) && isNum(x.ret, 0, BIG) && isNum(x.pl, -BIG, BIG) && isNum(x.clv, -BIG, BIG)
+      && isInt(x.n, 0, CFG.maxBets) && (x.read === null || isNum(x.read, 0, 100)));
+    return [id, { staked: x.staked, ret: x.ret, pl: x.pl, clv: x.clv, n: x.n, read: x.read }];
+  }));
+}
+/* a clean copy of a public table state, or null if anything is missing, mistyped or out of range */
+function cleanState(st) {
+  try {
+    need(isObj(st) && st.v === 1 && typeof st.room === 'string' && /^[A-Z]{4}$/.test(st.room) && PHASES.includes(st.phase));
+    need(isInt(st.rounds, 1, 50) && isInt(st.round, 0, st.rounds) && isNum(st.betSecs, 1, 600) && isNum(st.revealSecs, 1, 600));
+    need(isNum(st.line, 0, 100) && [st.roundStart, st.endsAt, st.nextAt, st.created, st.hostNow].every(t => isNum(t, 0, MS)));
+    need(isStr(st.hostName, 16) && (st.hostSeat === null || isId(st.hostSeat)));
+    const players = cleanList(st.players, CFG.maxSeats, cleanPlayer);
+    need(new Set(players.map(p => p.id)).size === players.length);
+    const inRound = st.phase === 'betting' || st.phase === 'reveal';
+    let match = null;
+    if (st.match !== null || inRound) {
+      need(isObj(st.match) && isInt(st.match.home, 0, TEAMS.length - 1) && isInt(st.match.away, 0, TEAMS.length - 1) && st.match.home !== st.match.away);
+      match = { home: st.match.home, away: st.match.away };
+    }
+    let reveal = null;
+    if (st.phase === 'reveal') {
+      const r = st.reveal;
+      need(isObj(r) && isInt(r.round, 1, st.rounds) && isNum(r.P, 0, 100) && isSide(r.winner) && isNum(r.close, 0, 100));
+      reveal = { round: r.round, P: r.P, winner: r.winner, close: r.close, results: cleanResults(r.results) };
+    }
+    let final = null;
+    if (st.phase === 'final') {
+      const f = st.final;
+      need(isObj(f) && (f.sharpest === null || isId(f.sharpest)));
+      final = { standings: cleanList(f.standings, CFG.maxSeats, id => { need(isId(id)); return id; }), sharpest: f.sharpest };
+    }
+    return {
+      v: 1, room: st.room, phase: st.phase, hostPub: cleanJwk(st.hostPub), hostSeat: st.hostSeat, hostName: st.hostName,
+      round: st.round, rounds: st.rounds, betSecs: st.betSecs, revealSecs: st.revealSecs, match, line: st.line,
+      history: cleanList(st.history, 1000, h => { need(Array.isArray(h) && h.length === 2 && isNum(h[0], 0, MS) && isNum(h[1], 0, 100)); return [h[0], h[1]]; }),
+      roundStart: st.roundStart, endsAt: st.endsAt, nextAt: st.nextAt,
+      bets: cleanList(st.bets, CFG.maxSeats * CFG.maxBets, cleanBet),
+      feed: cleanList(st.feed, 50, f => { need(isObj(f) && isNum(f.t, 0, MS) && isStr(f.txt, 300)); return { t: f.t, txt: f.txt }; }),
+      players, reveal, final, created: st.created, hostNow: st.hostNow,
+    };
+  } catch { return null; }
+}
+
 // ---------------------------------------------------------------- crypto
 const EC = { name: 'ECDH', namedCurve: 'P-256' };
 const Crypt = {
@@ -128,7 +202,10 @@ function peekState(net, room, ms = 3500) {
     const topic = NS + room + '/state';
     let off;
     const t = setTimeout(() => { off(); net.unsub(topic); resolve(null); }, ms);
-    off = net.on((tp, d) => { if (tp === topic && d && d.v === 1) { clearTimeout(t); off(); resolve(d); } });
+    off = net.on((tp, d) => {
+      const st = tp === topic ? cleanState(d) : null;
+      if (st && st.room === room) { clearTimeout(t); off(); resolve(st); }
+    });
     net.sub(topic);
   });
 }
@@ -197,28 +274,39 @@ class Host {
     this.lastN[seatId] = a.n; p.seen = Date.now();
     if (a.type === 'bet') this.bet(seatId, a.side, a.pct);
   }
-  async join({ cid, name, pub, jn }) {
+  async join({ cid, name, pub, jn, proof }) {
     name = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 16);
-    if (!name || !cid || !pub) return;
+    if (!name || !isCid(cid) || !isStr(jn, 16) || !isObj(pub)) return;
+    // Proof of possession: `proof` is sealed with the ECDH key between `pub` and the host key, so only
+    // the holder of pub's private half can make it. It names this cid, join and name, and its counter
+    // must beat the seat's last one, so a join seen on the relay can't be replayed or re-pointed.
+    let key, pf;
+    try { key = await Crypt.derive(this.kp.privateKey, pub); pf = await Crypt.dec(key, proof); } catch { return; }
+    if (!isObj(pf) || pf.cid !== cid || pf.jn !== jn || pf.name !== name || !isNum(pf.n, 1, Number.MAX_SAFE_INTEGER)) return;
     const s = this.s, now = Date.now();
     const ack = o => this.net.pub(`${this.T}/p/${cid}/ack`, { ...o, jn }, { retain: true, qos: 1 });
     let seat = Object.values(s.players).find(p => p.name.toLowerCase() === name.toLowerCase());
+    // the proof shows this is the key holder, so it is safe to tell them which seat that key already has
+    const owned = Object.values(s.players).find(p => !p.host && p.pub && p.pub.x === pub.x && p.pub.y === pub.y);
+    if (owned && owned !== seat) return ack({ ok: false, err: `You're already at this table as ${owned.name}. Rejoin as ${owned.name}.` });
+    if (this.cids[cid] && this.cids[cid] !== seat?.id) return; // someone else's cid: ignore quietly
     if (seat) {
       if (seat.host) return ack({ ok: false, err: `${name} is the host's name here. Pick another.` });
-      if (seat.cid !== cid && now - seat.seen < 12000) return ack({ ok: false, err: `Someone named ${name} is already at this table. Pick another name.` });
+      // A seat is bound to the key that first took it. Only that key can rejoin; nobody can swap it out.
+      if (seat.pub.x !== pub.x || seat.pub.y !== pub.y) return ack({ ok: false, err: `Someone named ${name} is already at this table. Pick another name.` });
+      if (!(pf.n > (this.lastN[seat.id] || 0))) return;
     } else {
       if (s.phase === 'final') return ack({ ok: false, err: 'This game just ended. Ask the host to start a new one.' });
       if (s.order.length >= CFG.maxSeats) return ack({ ok: false, err: 'This table is full (8 players).' });
     }
-    let key; try { key = await Crypt.derive(this.kp.privateKey, pub); } catch { return ack({ ok: false, err: 'Could not set up a secure channel.' }); }
     if (seat) {
-      if (seat.cid !== cid) { delete this.cids[seat.cid]; seat.cid = cid; this.lastN[seat.id] = 0; this.feed(`${seat.name} rejoined`); }
-      seat.pub = pub;
+      if (seat.cid !== cid) { delete this.cids[seat.cid]; seat.cid = cid; this.feed(`${seat.name} rejoined`); }
     } else {
       const id = rid(6);
-      seat = { id, name, chips: CFG.startChips, busted: false, clv: 0, nb: 0, seen: now, cid, pub, host: false };
+      seat = { id, name, chips: CFG.startChips, busted: false, clv: 0, nb: 0, seen: now, cid, pub: { kty: 'EC', crv: 'P-256', x: pub.x, y: pub.y }, host: false };
       s.players[id] = seat; s.order.push(id); this.feed(`${name} joined`);
     }
+    this.lastN[seat.id] = pf.n;
     seat.seen = now; this.cids[cid] = seat.id; this.keys[seat.id] = key;
     ack({ ok: true, seat: seat.id });
     if (s.phase === 'betting' && !seat.busted) {
@@ -361,26 +449,25 @@ const app = {
   view: '', net: null, room: null, host: null, me: null, cid: null, kp: null, key: null, hostPub: null,
   st: null, offset: 0, lastStateAt: 0, myRead: null, pct: 10, n: 0, jn: null, busy: false, pendingUntil: 0,
   now() { return Date.now() + this.offset; },
-  onState(st, local) {
-    if (!st || st.v !== 1) return;
+  onState(raw, local) {
+    const st = local ? raw : cleanState(raw); // the host's own state is trusted, anything from the relay is not
+    if (!st || (!local && st.room !== this.room)) return;
+    // the host key is pinned when we join; a state naming any other host key isn't from our host
+    if (!local && this.hostPub && (st.hostPub.x !== this.hostPub.x || st.hostPub.y !== this.hostPub.y)) return;
     if (!local) {
       const off = st.hostNow - Date.now();
       this.offset = this.lastStateAt ? this.offset * 0.7 + off * 0.3 : off;
     }
     this.st = st; this.lastStateAt = Date.now();
     if (this.host) this.me = this.st.hostSeat;
-    if (!this.host && st.hostPub && JSON.stringify(st.hostPub) !== JSON.stringify(this.hostPub)) this.rekey(st.hostPub);
     if (this.host && st.phase === 'betting') this.myRead = { round: st.round, read: this.host.sec.reads[this.me] ?? null };
     render();
   },
-  async rekey(pub) {
-    this.hostPub = pub;
-    try { this.key = await Crypt.derive(this.kp.privateKey, pub); } catch { this.key = null; }
-    if (this.me) this.sendJoin(); // host key changed, so re-register
-  },
-  sendJoin() {
-    this.jn = rid(6);
-    this.net.pub(NS + this.room + '/toHost', { type: 'join', cid: this.cid, name: this.name, pub: this.kjwk.pub, jn: this.jn }, { qos: 1 });
+  async sendJoin() {
+    const jn = this.jn = rid(6);
+    this.n = Math.max(this.n + 1, Date.now());
+    const proof = await Crypt.enc(this.key, { cid: this.cid, name: this.name, jn, n: this.n });
+    this.net.pub(NS + this.room + '/toHost', { type: 'join', cid: this.cid, name: this.name, pub: this.kjwk.pub, jn, proof }, { qos: 1 });
   },
   async act(a) {
     if (this.host) { if (a.type === 'bet') this.host.bet(this.me, a.side, a.pct); return; }
@@ -396,16 +483,19 @@ async function onPrivate(t, d) {
   if (!t.startsWith(base)) return;
   const kind = t.slice(base.length);
   if (kind === 'ack') {
-    if (!d || d.jn !== app.jn) return;
+    if (!isObj(d) || d.jn !== app.jn || (d.ok && !isId(d.seat))) return;
     if (!d.ok) { app.me = null; store.del('btc.session'); leaveTo('home', d.err); return; }
     app.me = d.seat;
     store.set('btc.session', { room: app.room, name: app.name, b: app.net.b });
     render();
   } else if (kind === 'read') {
     if (!app.key) return;
-    try { const r = await Crypt.dec(app.key, d); app.myRead = r; render(); } catch {}
+    try {
+      const r = await Crypt.dec(app.key, d);
+      if (isObj(r) && isInt(r.round, 0, 50) && (r.read === null || isNum(r.read, 0, 100))) { app.myRead = { round: r.round, read: r.read }; render(); }
+    } catch {}
   } else if (kind === 'msg') {
-    if (d && Date.now() - (d.t || 0) < 15000) toast(d.text);
+    if (isObj(d) && isStr(d.text, 200) && isNum(d.t, 0, MS) && Date.now() - d.t < 15000) toast(d.text);
   }
 }
 
@@ -426,7 +516,7 @@ async function joinRoom(room, name, bHint) {
   if (!found) { if (net) net.end(); return showErr(`No table found with code ${room}. Check the code with your host.`); }
   if (Date.now() - found.hostNow > 20 * 60 * 1000) toast('That table looks idle. It will wake up if the host comes back.');
   pref.set('btc.name', name);
-  app.net = net; app.room = room; app.name = name;
+  app.net = net; app.room = room; app.name = name; app.hostPub = found.hostPub;
   const idKey = 'btc.id.' + room;
   let ident = store.get(idKey);
   if (!ident) { const k = await Crypt.gen(); ident = { cid: rid(12), jwk: k.jwk }; store.set(idKey, ident); }
@@ -438,7 +528,6 @@ async function joinRoom(room, name, bHint) {
   });
   net.sub(NS + room + '/p/' + app.cid + '/#');
   net.sub(NS + room + '/state');
-  app.hostPub = found.hostPub;
   app.key = await Crypt.derive(app.kp.privateKey, found.hostPub);
   app.onState(found, false);
   app.sendJoin();
@@ -507,7 +596,7 @@ const logo = (s = 56) => `<svg class="logo" width="${s}" viewBox="0 0 32 32" ari
 
 function topbar() {
   const st = app.st;
-  const round = st && st.round ? `<span class="pill">Round <b>${st.round}</b>/${st.rounds}</span>` : '';
+  const round = st && st.round ? `<span class="pill">Round <b>${esc(st.round)}</b>/${esc(st.rounds)}</span>` : '';
   return `<header class="topbar">
     <div class="brand-sm">${logo(26)}<span class="full">Beat the</span><span>Close</span></div>
     ${round}<span class="pill"><span id="conn" class="dot"></span> ${esc(app.room || '')}</span>
@@ -615,7 +704,7 @@ function viewFinal() {
     return `<tr><td>${i + 1}. ${esc(p.name)}${id === app.me ? ' <span class="badge">you</span>' : ''}</td><td class="n">${fmt(p.chips)}</td><td class="n ${cls(p.clv)}">${sgn(p.clv)}</td><td class="n ${cls(p.chips - 1000)}">${sgn(p.chips - 1000, 0)}</td></tr>`;
   }).join('');
   return `${topbar()}<div class="wrap final">
-    <section class="card champ"><div class="kicker">Final after ${st.round} round${st.round === 1 ? '' : 's'}</div>
+    <section class="card champ"><div class="kicker">Final after ${esc(st.round)} round${st.round === 1 ? '' : 's'}</div>
       <h2>${esc(champ?.name || '—')}</h2><p class="muted">wins the table with <b class="mono">${fmt(champ?.chips || 0)}</b> chips</p></section>
     <div class="awards">
       <section class="card award"><small>Top stack</small><b>${esc(champ?.name || '—')}</b><span>${fmt(champ?.chips || 0)} chips</span></section>
@@ -764,7 +853,7 @@ function updReveal() {
       const r = rv.results[p.id]; if (!r) return '';
       const bl = st.bets.filter(b => b.seat === p.id).map(b => `${b.side === 'H' ? 'H' : 'A'} ${fmt(b.stake)}@${(b.side === 'H' ? b.entry : 100 - b.entry).toFixed(1)} <span class="${cls(b.clv)}">${sgn(b.clv)}</span>${b.won ? ' ✓' : ' ✗'}`).join(' · ');
       return `<tr><td><b>${esc(p.name)}</b>${r.clv > 0 ? '<span class="badge">beat the close</span>' : ''}<span class="bl">${bl || 'no bets'}</span></td>
-        <td class="n">${r.read == null ? '—' : r.read + '%'}</td><td class="n ${cls(r.clv)}">${r.n ? sgn(r.clv) : '—'}</td><td class="n ${cls(r.pl)}">${r.n ? sgn(r.pl, 0) : '—'}</td></tr>`;
+        <td class="n">${r.read == null ? '—' : esc(r.read) + '%'}</td><td class="n ${cls(r.clv)}">${r.n ? sgn(r.clv) : '—'}</td><td class="n ${cls(r.pl)}">${r.n ? sgn(r.pl, 0) : '—'}</td></tr>`;
     }).join('');
     let lesson = 'Positive CLV means you got a better price than where the market closed. Do that every round and the chips follow.';
     if (myRes && myRes.n) {
@@ -773,10 +862,10 @@ function updReveal() {
       else if (myRes.clv > 0) lesson = `You beat the close by ${myRes.clv.toFixed(1)} pts and got paid. That's the whole game.`;
       else if (myRes.clv < 0) lesson = `The market closed ${Math.abs(myRes.clv).toFixed(1)} pts against you. Next time, bet earlier when your read disagrees with the line.`;
     }
-    el.innerHTML = `<div class="kicker">Round ${rv.round} result</div>
+    el.innerHTML = `<div class="kicker">Round ${esc(rv.round)} result</div>
       <h2 class="winner"><span class="${rv.winner === 'H' ? 'hc' : 'ac'}">${esc(TEAMS[winTeam][1])}</span> win</h2>
-      <div class="facts"><div><small>True chance</small><b>Home ${rv.P.toFixed(1)}%</b></div><div><small>Closing line</small><b>Home ${rv.close.toFixed(1)}%</b></div>
-        <div><small>Your read</small><b>${myRes && myRes.read != null ? 'Home ' + myRes.read + '%' : '—'}</b></div></div>
+      <div class="facts"><div><small>True chance</small><b>Home ${esc(rv.P.toFixed(1))}%</b></div><div><small>Closing line</small><b>Home ${esc(rv.close.toFixed(1))}%</b></div>
+        <div><small>Your read</small><b>${myRes && myRes.read != null ? 'Home ' + esc(myRes.read) + '%' : '—'}</b></div></div>
       <table class="results"><thead><tr><th>Player</th><th class="n">Read</th><th class="n">CLV</th><th class="n">Net</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="lesson">${esc(lesson)}</p>
       <div class="nextrow"><span class="muted" id="nextIn"></span>${app.host ? '<button class="btn primary" data-act="next">Next now</button>' : ''}</div>`;
@@ -803,9 +892,9 @@ function drawChart() {
   d += ` L${x(tEnd).toFixed(1)},${y(hist[hist.length - 1][1]).toFixed(1)}`;
   const ticks = []; for (let v = lo; v <= hi; v += (hi - lo > 40 ? 10 : 5)) ticks.push(v);
   let g = ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/><text x="${L - 4}" y="${y(v) + 3}" text-anchor="end">${v}</text>`).join('');
-  g += `<text x="${L}" y="${H - 4}">0s</text><text x="${W - R}" y="${H - 4}" text-anchor="end">${st.betSecs}s</text>`;
-  if (read != null) g += `<line x1="${L}" x2="${W - R}" y1="${y(read)}" y2="${y(read)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${W - R - 2}" y="${y(read) - 4}" text-anchor="end" style="fill:var(--accent)">you ${read}</text>`;
-  if (reveal) g += `<line x1="${L}" x2="${W - R}" y1="${y(reveal.P)}" y2="${y(reveal.P)}" stroke="var(--pos)" stroke-width="2" stroke-dasharray="2 3"/><text x="${L + 4}" y="${y(reveal.P) - 4}" style="fill:var(--pos)">true ${reveal.P.toFixed(1)}</text>`;
+  g += `<text x="${L}" y="${H - 4}">0s</text><text x="${W - R}" y="${H - 4}" text-anchor="end">${esc(st.betSecs)}s</text>`;
+  if (read != null) g += `<line x1="${L}" x2="${W - R}" y1="${y(read)}" y2="${y(read)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${W - R - 2}" y="${y(read) - 4}" text-anchor="end" style="fill:var(--accent)">you ${esc(read)}</text>`;
+  if (reveal) g += `<line x1="${L}" x2="${W - R}" y1="${y(reveal.P)}" y2="${y(reveal.P)}" stroke="var(--pos)" stroke-width="2" stroke-dasharray="2 3"/><text x="${L + 4}" y="${y(reveal.P) - 4}" style="fill:var(--pos)">true ${esc(reveal.P.toFixed(1))}</text>`;
   g += `<path d="${d}" fill="none" stroke="var(--text)" stroke-width="2.2" stroke-linejoin="round"/>`;
   g += st.bets.map(b => `<circle cx="${x(b.t).toFixed(1)}" cy="${y(b.entry).toFixed(1)}" r="${b.seat === app.me ? 5.5 : 4}" fill="${b.side === 'H' ? 'var(--home)' : 'var(--away)'}" stroke="${b.seat === app.me ? 'var(--text)' : 'var(--card)'}" stroke-width="1.5"/>`).join('');
   if (st.phase === 'betting') g += `<circle cx="${x(tEnd).toFixed(1)}" cy="${y(hist[hist.length - 1][1]).toFixed(1)}" r="3.5" fill="var(--text)"/>`;
