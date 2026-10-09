@@ -69,6 +69,7 @@ const isInt = (x, lo, hi) => Number.isInteger(x) && x >= lo && x <= hi;
 const isNum = (x, lo, hi) => typeof x === 'number' && Number.isFinite(x) && x >= lo && x <= hi;
 const isId = x => typeof x === 'string' && /^[a-z0-9]{1,16}$/.test(x);
 const isSide = x => x === 'H' || x === 'A';
+const isCid = x => typeof x === 'string' && /^[a-z0-9]{8,24}$/.test(x);
 const BIG = 1e12, MS = 1e14; // chip and epoch-ms ceilings, far above anything a real game reaches
 const need = ok => { if (!ok) throw new TypeError('bad state'); };
 const cleanJwk = k => { need(isObj(k) && k.kty === 'EC' && k.crv === 'P-256' && [k.x, k.y].every(c => typeof c === 'string' && /^[A-Za-z0-9_-]{43}$/.test(c))); return { kty: 'EC', crv: 'P-256', x: k.x, y: k.y }; };
@@ -273,28 +274,36 @@ class Host {
     this.lastN[seatId] = a.n; p.seen = Date.now();
     if (a.type === 'bet') this.bet(seatId, a.side, a.pct);
   }
-  async join({ cid, name, pub, jn }) {
+  async join({ cid, name, pub, jn, proof }) {
     name = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 16);
-    if (!name || !cid || !pub) return;
+    if (!name || !isCid(cid) || !isStr(jn, 16) || !isObj(pub)) return;
+    // Proof of possession: `proof` is sealed with the ECDH key between `pub` and the host key, so only
+    // the holder of pub's private half can make it. It names this cid, join and name, and its counter
+    // must beat the seat's last one, so a join seen on the relay can't be replayed or re-pointed.
+    let key, pf;
+    try { key = await Crypt.derive(this.kp.privateKey, pub); pf = await Crypt.dec(key, proof); } catch { return; }
+    if (!isObj(pf) || pf.cid !== cid || pf.jn !== jn || pf.name !== name || !isNum(pf.n, 1, Number.MAX_SAFE_INTEGER)) return;
     const s = this.s, now = Date.now();
     const ack = o => this.net.pub(`${this.T}/p/${cid}/ack`, { ...o, jn }, { retain: true, qos: 1 });
     let seat = Object.values(s.players).find(p => p.name.toLowerCase() === name.toLowerCase());
+    if (this.cids[cid] && this.cids[cid] !== seat?.id) return; // that cid already belongs to another seat
     if (seat) {
       if (seat.host) return ack({ ok: false, err: `${name} is the host's name here. Pick another.` });
-      if (seat.cid !== cid && now - seat.seen < 12000) return ack({ ok: false, err: `Someone named ${name} is already at this table. Pick another name.` });
+      // A seat is bound to the key that first took it. Only that key can rejoin; nobody can swap it out.
+      if (seat.pub.x !== pub.x || seat.pub.y !== pub.y) return ack({ ok: false, err: `Someone named ${name} is already at this table. Pick another name.` });
+      if (!(pf.n > (this.lastN[seat.id] || 0))) return;
     } else {
       if (s.phase === 'final') return ack({ ok: false, err: 'This game just ended. Ask the host to start a new one.' });
       if (s.order.length >= CFG.maxSeats) return ack({ ok: false, err: 'This table is full (8 players).' });
     }
-    let key; try { key = await Crypt.derive(this.kp.privateKey, pub); } catch { return ack({ ok: false, err: 'Could not set up a secure channel.' }); }
     if (seat) {
-      if (seat.cid !== cid) { delete this.cids[seat.cid]; seat.cid = cid; this.lastN[seat.id] = 0; this.feed(`${seat.name} rejoined`); }
-      seat.pub = pub;
+      if (seat.cid !== cid) { delete this.cids[seat.cid]; seat.cid = cid; this.feed(`${seat.name} rejoined`); }
     } else {
       const id = rid(6);
-      seat = { id, name, chips: CFG.startChips, busted: false, clv: 0, nb: 0, seen: now, cid, pub, host: false };
+      seat = { id, name, chips: CFG.startChips, busted: false, clv: 0, nb: 0, seen: now, cid, pub: { kty: 'EC', crv: 'P-256', x: pub.x, y: pub.y }, host: false };
       s.players[id] = seat; s.order.push(id); this.feed(`${name} joined`);
     }
+    this.lastN[seat.id] = pf.n;
     seat.seen = now; this.cids[cid] = seat.id; this.keys[seat.id] = key;
     ack({ ok: true, seat: seat.id });
     if (s.phase === 'betting' && !seat.busted) {
@@ -440,24 +449,22 @@ const app = {
   onState(raw, local) {
     const st = local ? raw : cleanState(raw); // the host's own state is trusted, anything from the relay is not
     if (!st || (!local && st.room !== this.room)) return;
+    // the host key is pinned when we join; a state naming any other host key isn't from our host
+    if (!local && this.hostPub && (st.hostPub.x !== this.hostPub.x || st.hostPub.y !== this.hostPub.y)) return;
     if (!local) {
       const off = st.hostNow - Date.now();
       this.offset = this.lastStateAt ? this.offset * 0.7 + off * 0.3 : off;
     }
     this.st = st; this.lastStateAt = Date.now();
     if (this.host) this.me = this.st.hostSeat;
-    if (!this.host && st.hostPub && JSON.stringify(st.hostPub) !== JSON.stringify(this.hostPub)) this.rekey(st.hostPub);
     if (this.host && st.phase === 'betting') this.myRead = { round: st.round, read: this.host.sec.reads[this.me] ?? null };
     render();
   },
-  async rekey(pub) {
-    this.hostPub = pub;
-    try { this.key = await Crypt.derive(this.kp.privateKey, pub); } catch { this.key = null; }
-    if (this.me) this.sendJoin(); // host key changed, so re-register
-  },
-  sendJoin() {
-    this.jn = rid(6);
-    this.net.pub(NS + this.room + '/toHost', { type: 'join', cid: this.cid, name: this.name, pub: this.kjwk.pub, jn: this.jn }, { qos: 1 });
+  async sendJoin() {
+    const jn = this.jn = rid(6);
+    this.n = Math.max(this.n + 1, Date.now());
+    const proof = await Crypt.enc(this.key, { cid: this.cid, name: this.name, jn, n: this.n });
+    this.net.pub(NS + this.room + '/toHost', { type: 'join', cid: this.cid, name: this.name, pub: this.kjwk.pub, jn, proof }, { qos: 1 });
   },
   async act(a) {
     if (this.host) { if (a.type === 'bet') this.host.bet(this.me, a.side, a.pct); return; }
@@ -506,7 +513,7 @@ async function joinRoom(room, name, bHint) {
   if (!found) { if (net) net.end(); return showErr(`No table found with code ${room}. Check the code with your host.`); }
   if (Date.now() - found.hostNow > 20 * 60 * 1000) toast('That table looks idle. It will wake up if the host comes back.');
   pref.set('btc.name', name);
-  app.net = net; app.room = room; app.name = name;
+  app.net = net; app.room = room; app.name = name; app.hostPub = found.hostPub;
   const idKey = 'btc.id.' + room;
   let ident = store.get(idKey);
   if (!ident) { const k = await Crypt.gen(); ident = { cid: rid(12), jwk: k.jwk }; store.set(idKey, ident); }
@@ -518,7 +525,6 @@ async function joinRoom(room, name, bHint) {
   });
   net.sub(NS + room + '/p/' + app.cid + '/#');
   net.sub(NS + room + '/state');
-  app.hostPub = found.hostPub;
   app.key = await Crypt.derive(app.kp.privateKey, found.hostPub);
   app.onState(found, false);
   app.sendJoin();

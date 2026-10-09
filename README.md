@@ -20,7 +20,15 @@ The full rules are in the game under **?**.
 - It's a static site with no server of its own and no sign-up. Devices talk through a public MQTT relay over secure WebSockets (HiveMQ, with EMQX as a fallback).
 - The host's browser is the authority. It holds the true chance, runs the clock, validates every bet and broadcasts the public state. Players never receive the true chance before the reveal.
 - Scouting reads and bets are end-to-end encrypted per player with ECDH P-256 and AES-GCM. Nobody watching the relay can read someone else's read or place a bet in their name, and replayed messages are rejected.
-- Refreshing is safe. The host's table state and each player's identity are saved in the tab. A player on a new device can take back their seat by joining with the same name, as long as the old one has gone quiet.
+- Refreshing is safe. The host's table state and each player's identity are saved in the tab. A seat belongs to the key that first took it, so a player who switches device or closes the tab joins again under a new name.
 - The bet ticket shows your edge against the line and a Kelly-criterion stake, with a one-tap half-Kelly option.
 
 It's plain HTML, CSS and JavaScript with no build step. mqtt.js, qrcode-generator and the fonts are vendored.
+
+## Security notes
+
+The relay is public, so anyone who learns a room code can publish to that room. Every state from the relay is checked against a strict schema and every value is HTML-escaped before it is shown.
+
+Each player's ECDH private key is generated in their tab and never published. The host binds a seat to the public key that first joined with that name, and every join carries a proof sealed with that player's key (naming the connection, the join and a counter that has to keep rising). So a peer who only watches the relay can't take over a seat, swap in their own key to read someone's scouting read, or replay an old join or bet. Players also pin the host's key when they join and ignore states that name a different one.
+
+Limits: the host is trusted completely, since it holds the true chance and sees every bet. The public state isn't signed, so a peer can still publish a fake state (wrong chips, a stuck clock) that shows until the host's next update, and the plaintext ping, ack and toast topics can be spoofed to mark a player online or bounce them back to the home screen. Someone who publishes a fake table before you join can pose as the host to you.
