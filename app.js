@@ -256,6 +256,11 @@ class Host {
   }
   setPlays(on) {
     if (this.s.phase !== 'lobby') return;
+    if (on && !this.s.hostSeat && this.s.order.length >= CFG.maxSeats) {
+      toast('This table is full (8 players). You can host as a spectator.');
+      this.changed();
+      return;
+    }
     if (on && !this.s.hostSeat) this.addHostSeat();
     if (!on && this.s.hostSeat) { delete this.s.players[this.s.hostSeat]; this.s.order = this.s.order.filter(x => x !== this.s.hostSeat); this.s.hostSeat = null; }
     this.changed();
@@ -757,6 +762,9 @@ function updLobby() {
     || '<li class="muted">Nobody yet. Share the code.</li>';
   if (app.host) {
     const n = st.players.length, btn = $('#startBtn');
+    const plays = $('#plays');
+    plays.checked = !!st.hostSeat;
+    plays.disabled = !st.hostSeat && n >= CFG.maxSeats;
     btn.disabled = n < 2;
     $('#startHint').textContent = n < 2 ? 'Need at least 2 players to start.' : `${n} players ready.`;
   }
@@ -825,7 +833,7 @@ function updTicket(me) {
   $('#mypips').innerHTML = [0, 1, 2].map(k => `<i class="${k < mine.length ? 'used' : ''}"></i>`).join('');
   $('#mybets').innerHTML = mine.map(b => {
     const cur = b.side === 'H' ? st.line - b.entry : b.entry - st.line;
-    return `<li><b class="${b.side === 'H' ? 'hc' : 'ac'}">${b.side === 'H' ? 'Home' : 'Away'}</b> ${fmt(b.stake)} @ ${(b.side === 'H' ? b.entry : 100 - b.entry).toFixed(1)}% · to win ${fmt(b.stake * payMult(b.side, b.entry))} · <span class="${cls(cur)}">${sgn(cur)} vs line now</span></li>`;
+    return `<li><b class="${b.side === 'H' ? 'hc' : 'ac'}">${b.side === 'H' ? 'Home' : 'Away'}</b> ${fmt(b.stake)} @ ${(b.side === 'H' ? b.entry : 100 - b.entry).toFixed(1)}% · returns ${fmt(b.stake * payMult(b.side, b.entry))} · <span class="${cls(cur)}">${sgn(cur)} vs line now</span></li>`;
   }).join('');
   // edge + Kelly
   const k = $('#kelly');

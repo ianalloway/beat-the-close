@@ -25,6 +25,22 @@ The full rules are in the game under **?**.
 
 It's plain HTML, CSS and JavaScript with no build step. mqtt.js, qrcode-generator and the fonts are vendored.
 
+## Local development and checks
+
+Serve the repository on localhost so browser cryptography is available:
+
+```sh
+python3 -m http.server 8080
+# Open http://localhost:8080/ in separate tabs or devices.
+node --test tests/*.test.mjs
+```
+
+The game uses the public relay even when served locally. The dependency-free
+tests do not connect to it: they check the eight-seat limit, host participation,
+and the public-state schema. For a quick manual round, use `?fast=1` to shorten
+the betting and reveal timers. Check the page at phone width and use Tab to
+confirm that controls have visible focus.
+
 ## Security notes
 
 The relay is public, so anyone who learns a room code can publish to that room. Every state from the relay is checked against a strict schema and every value is HTML-escaped before it is shown.
