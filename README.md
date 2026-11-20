@@ -15,6 +15,10 @@ The teams are named after the rivers around Fairmont, West Virginia, where the T
 
 The full rules are in the game under **?**.
 
+During a round reveal, the host can choose **Hold results** to give everyone
+more time to review their bets. **Next now** advances the table, including to
+the final standings after the last round.
+
 ## How it works
 
 - It's a static site with no server of its own and no sign-up. Devices talk through a public MQTT relay over secure WebSockets (HiveMQ, with EMQX as a fallback).
