@@ -20,7 +20,7 @@ async function table(playerCount, crypto = webcrypto) {
     crypto, TextEncoder, TextDecoder, btoa, atob,
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
   });
-  vm.runInContext(source + '\nglobalThis.api={Host,cleanState,updLobby,updReveal,app,code4};})();', context);
+  vm.runInContext(source + '\nglobalThis.api={Host,cleanState,updLobby,updReveal,projectedStacks,app,code4};})();', context);
   const { Host } = context.api;
   const host = new Host({}, 'ABCD');
   host.start = () => {};
@@ -40,6 +40,25 @@ test('a spectator host cannot add a ninth seat and break remote state validation
   assert.equal(host.s.order.length, 8);
   assert.equal(host.s.hostSeat, null);
   assert.ok(cleanState(host.publicState()), 'players must still receive a valid public table');
+});
+
+test('projected stacks use personal entry prices, round each ticket, and match settlement', async () => {
+  const { host, projectedStacks } = await table(2);
+  host.startGame();
+  host.s.line = 60;
+  host.bet('p0', 'H', 10);
+  host.s.line = 32;
+  host.bet('p0', 'A', 20);
+  host.s.line = 60;
+  host.bet('p0', 'H', 10);
+  host.bet('p1', 'A', 25);
+  const me = host.s.players.p0;
+  const mine = host.s.bets.filter(b => b.seat === 'p0');
+  const stack = projectedStacks(me.chips, mine);
+  assert.equal(me.chips, 648);
+  assert.deepEqual({ ...stack }, { H: 935, A: 913 });
+  host.close();
+  assert.equal(me.chips, stack[host.s.reveal.winner]);
 });
 
 test('holding published results keeps a round visible until the host advances', async () => {

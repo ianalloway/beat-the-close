@@ -60,6 +60,13 @@ const pref = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 const payMult = (side, line) => side === 'H' ? 100 / line : 100 / (100 - line);
+const winningReturn = (stake, side, entry) => Math.round(stake / ((side === 'H' ? entry : 100 - entry) / 100));
+
+function projectedStacks(chips, bets) {
+  const stacks = { H: chips, A: chips };
+  for (const b of bets) stacks[b.side] += winningReturn(b.stake, b.side, b.entry);
+  return stacks;
+}
 // Timers in a background tab get throttled to a crawl; a worker's timers keep running,
 // so the host's clock and the players' heartbeats keep ticking when the tab is hidden.
 function ticker(fn, ms) {
@@ -388,10 +395,9 @@ class Host {
       let staked = 0, ret = 0, clv = 0, n = 0;
       for (const b of s.bets) {
         if (b.seat !== id) continue;
-        const q = b.side === 'H' ? b.entry / 100 : (100 - b.entry) / 100;
         b.clv = r1(b.side === 'H' ? close - b.entry : b.entry - close);
         b.won = b.side === winner;
-        b.ret = b.won ? Math.round(b.stake / q) : 0;
+        b.ret = b.won ? winningReturn(b.stake, b.side, b.entry) : 0;
         staked += b.stake; ret += b.ret; clv += b.clv; n++;
       }
       p.chips += ret; p.clv = r1(p.clv + clv);
@@ -834,7 +840,8 @@ function updTicket(me) {
         <button class="bet away" data-act="bet" data-side="A"><span>Bet Away</span><small id="payA"></small></button>
       </div>
       <div class="betsleft"><span id="betsleft"></span><span class="pips" id="mypips"></span></div>
-      <ul class="mybets" id="mybets"></ul>`;
+      <ul class="mybets" id="mybets"></ul>
+      <p class="muted" id="stackOutlook" hidden></p>`;
     $('#pct').addEventListener('input', e => { app.pct = +e.target.value; updTicket(myPlayer()); });
   }
   const read = app.myRead && app.myRead.round === st.round ? app.myRead.read : null;
@@ -844,6 +851,12 @@ function updTicket(me) {
   $('#payH').textContent = `@ ${st.line.toFixed(1)}% · returns ${fmt(stake * payMult('H', st.line))}`;
   $('#payA').textContent = `@ ${(100 - st.line).toFixed(1)}% · returns ${fmt(stake * payMult('A', st.line))}`;
   const mine = st.bets.filter(b => b.seat === app.me);
+  const outlook = $('#stackOutlook');
+  outlook.hidden = mine.length === 0;
+  if (mine.length) {
+    const stack = projectedStacks(me.chips, mine);
+    outlook.textContent = `Chips after this round with your current bets: ${fmt(stack.H)} if Home wins · ${fmt(stack.A)} if Away wins`;
+  }
   const left = 3 - mine.length, closed = app.now() >= st.endsAt, pending = Date.now() < app.pendingUntil;
   document.querySelectorAll('#ticket .bet').forEach(b => { b.disabled = left <= 0 || closed || pending || me.chips < 1; });
   $('#betsleft').textContent = left > 0 ? `${left} bet${left === 1 ? '' : 's'} left this round` : 'All 3 bets placed. Sweat the close.';
