@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-async function table(playerCount) {
+async function table(playerCount, crypto = webcrypto) {
   const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
     .split('// ---------------------------------------------------------------- boot')[0];
   const nodes = new Map();
@@ -17,10 +17,10 @@ async function table(playerCount) {
   };
   const context = vm.createContext({
     document, window: {}, location: { search: '' }, URLSearchParams,
-    crypto: webcrypto, TextEncoder, TextDecoder, btoa, atob,
+    crypto, TextEncoder, TextDecoder, btoa, atob,
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
   });
-  vm.runInContext(source + '\nglobalThis.api={Host,cleanState,updLobby,app};})();', context);
+  vm.runInContext(source + '\nglobalThis.api={Host,cleanState,updLobby,app,code4};})();', context);
   const { Host } = context.api;
   const host = new Host({}, 'ABCD');
   host.start = () => {};
@@ -69,4 +69,19 @@ test('the lobby disables joining a full table but still lets a seated host leave
   updLobby();
   assert.equal(nodes.get('#plays').checked, true);
   assert.equal(nodes.get('#plays').disabled, false);
+});
+
+test('room codes discard the uneven tail of the random byte range', async () => {
+  const batches = [[240, 255, 0, 23], [24, 239]];
+  const crypto = {
+    subtle: webcrypto.subtle,
+    getRandomValues(bytes) {
+      if (bytes.length > 4) return webcrypto.getRandomValues(bytes);
+      bytes.set(batches.shift());
+      return bytes;
+    },
+  };
+  const { code4 } = await table(0, crypto);
+  assert.equal(code4(), 'AZAZ');
+  assert.equal(batches.length, 0);
 });
