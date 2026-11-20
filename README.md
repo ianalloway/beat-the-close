@@ -26,6 +26,7 @@ the final standings after the last round.
 - Scouting reads and bets are end-to-end encrypted per player with ECDH P-256 and AES-GCM. Nobody watching the relay can read someone else's read or place a bet in their name, and replayed messages are rejected.
 - Refreshing is safe. The host's table state and each player's identity are saved in the tab. A seat belongs to the key that first took it, so a player who switches device or closes the tab joins again under a new name.
 - The bet ticket shows your edge against the line and a Kelly-criterion stake, with a one-tap half-Kelly option.
+- Once you place a bet, your ticket shows the chip total you would finish the round with under each possible outcome. These totals use the entry price of each accepted bet.
 
 It's plain HTML, CSS and JavaScript with no build step. mqtt.js, qrcode-generator and the fonts are vendored.
 
