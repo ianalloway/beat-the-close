@@ -29,7 +29,19 @@ const $ = (s, r = document) => r.querySelector(s);
 const rnd = () => crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
 const normal = () => { let u = 0, v = 0; while (!u) u = rnd(); while (!v) v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
 const rid = (n = 8) => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
-const code4 = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), b => 'ABCDEFGHJKLMNPQRSTUVWXYZ'[b % 24]).join('');
+function code4() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const limit = 256 - (256 % alphabet.length);
+  const bytes = new Uint8Array(4);
+  let code = '';
+  while (code.length < 4) {
+    const remaining = bytes.subarray(0, 4 - code.length);
+    for (const byte of crypto.getRandomValues(remaining)) {
+      if (byte < limit) code += alphabet[byte % alphabet.length];
+    }
+  }
+  return code;
+}
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const r1 = x => Math.round(x * 10) / 10;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
