@@ -11,7 +11,7 @@ async function table(playerCount) {
   const document = {
     addEventListener() {},
     querySelector(selector) {
-      if (!nodes.has(selector)) nodes.set(selector, { textContent: '', innerHTML: '', classList: { add() {}, remove() {} } });
+      if (!nodes.has(selector)) nodes.set(selector, { textContent: '', innerHTML: '', dataset: {}, classList: { add() {}, remove() {} } });
       return nodes.get(selector);
     },
   };
@@ -20,7 +20,7 @@ async function table(playerCount) {
     crypto: webcrypto, TextEncoder, TextDecoder, btoa, atob,
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
   });
-  vm.runInContext(source + '\nglobalThis.api={Host,cleanState,updLobby,app};})();', context);
+  vm.runInContext(source + '\nglobalThis.api={Host,cleanState,updLobby,updReveal,app};})();', context);
   const { Host } = context.api;
   const host = new Host({}, 'ABCD');
   host.start = () => {};
@@ -40,6 +40,34 @@ test('a spectator host cannot add a ninth seat and break remote state validation
   assert.equal(host.s.order.length, 8);
   assert.equal(host.s.hostSeat, null);
   assert.ok(cleanState(host.publicState()), 'players must still receive a valid public table');
+});
+
+test('holding published results keeps a round visible until the host advances', async () => {
+  const { host, cleanState, app, updReveal, nodes } = await table(2);
+  host.publish = () => {};
+  host.startGame();
+  host.holdResults();
+  assert.equal(host.s.phase, 'betting');
+  host.close();
+  assert.ok(host.s.nextAt > 0);
+  host.holdResults();
+  assert.equal(host.s.nextAt, 0);
+  host.tick();
+  assert.equal(host.s.phase, 'reveal');
+  app.st = cleanState(host.publicState());
+  updReveal();
+  assert.match(nodes.get('#nextIn').textContent, /on hold/);
+  assert.doesNotMatch(nodes.get('#reveal').innerHTML, /data-act="hold"/);
+  app.host = host;
+  nodes.get('#reveal').dataset = {};
+  updReveal();
+  assert.equal(nodes.get('#holdResults').hidden, true);
+  host.nextNow();
+  host.tick();
+  assert.equal(host.s.round, 2);
+  assert.equal(host.s.phase, 'betting');
+  host.close();
+  assert.ok(host.s.nextAt > 0);
 });
 
 test('the host can take the last free seat and return to spectating', async () => {
