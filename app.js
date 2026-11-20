@@ -414,6 +414,11 @@ class Host {
     this.changed();
   }
   nextNow() { if (this.s.phase === 'reveal') this.s.nextAt = Date.now(); }
+  holdResults() {
+    if (this.s.phase !== 'reveal' || this.s.nextAt <= Date.now()) return;
+    this.s.nextAt = 0;
+    this.changed();
+  }
   tick() {
     const s = this.s, now = Date.now();
     if (s.hostSeat) s.players[s.hostSeat].seen = now;
@@ -424,7 +429,7 @@ class Host {
         const nl = r1(clamp(s.line + CFG.driftPull * (this.sec.P - s.line) + normal() * CFG.driftNoise, 5, 95));
         if (nl !== s.line) { s.line = nl; s.history.push([now - s.roundStart, nl]); this.changed(); }
       }
-    } else if (s.phase === 'reveal' && now >= s.nextAt) this.advance();
+    } else if (s.phase === 'reveal' && s.nextAt > 0 && now >= s.nextAt) this.advance();
     if ((this.dirty && now - this.lastPub > 120) || now - this.lastPub > 2500) this.publish();
   }
   publicState() {
@@ -876,7 +881,13 @@ function updReveal() {
         <div><small>Your read</small><b>${myRes && myRes.read != null ? 'Home ' + esc(myRes.read) + '%' : '—'}</b></div></div>
       <table class="results"><thead><tr><th>Player</th><th class="n">Read</th><th class="n">CLV</th><th class="n">Net</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="lesson">${esc(lesson)}</p>
-      <div class="nextrow"><span class="muted" id="nextIn"></span>${app.host ? '<button class="btn primary" data-act="next">Next now</button>' : ''}</div>`;
+      <div class="nextrow"><span class="muted" id="nextIn"></span>${app.host ? '<button class="btn" id="holdResults" data-act="hold">Hold results</button><button class="btn primary" data-act="next">Next now</button>' : ''}</div>`;
+  }
+  const paused = st.nextAt === 0;
+  if (app.host) $('#holdResults').hidden = paused;
+  if (paused) {
+    $('#nextIn').textContent = 'Results on hold until the host advances.';
+    return;
   }
   const s = Math.max(0, Math.ceil((st.nextAt - app.now()) / 1000));
   $('#nextIn').textContent = st.round >= st.rounds ? `Final standings in ${s}s` : `Round ${st.round + 1} starts in ${s}s`;
@@ -945,6 +956,7 @@ document.addEventListener('click', async e => {
     const link = shareLink();
     try { await navigator.clipboard.writeText(link); toast('Link copied'); } catch { $('#link').select(); toast('Copy the highlighted link'); }
   } else if (act === 'start') app.host?.startGame();
+  else if (act === 'hold') app.host?.holdResults();
   else if (act === 'next') app.host?.nextNow();
   else if (act === 'again') app.host?.playAgain();
   else if (act === 'halfk') { app.pct = +b.dataset.v; const r = $('#pct'); if (r) r.value = app.pct; updTicket(myPlayer()); }
